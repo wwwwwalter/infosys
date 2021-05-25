@@ -22,8 +22,49 @@
 #include <arpa/inet.h>
 
 
-extern std::vector<User> userList;
-extern std::map<int, std::vector<User>> rooms;
+
+void printMessage(DataMessage &recvbuf){
+        std::cout << "********recvbuf***********"<<std::endl;
+        std::cout << "messageType:\t"<<recvbuf.messageType<<std::endl;
+        std::cout << "userName:\t"<<recvbuf.data.userInfo.userName<<std::endl;
+	sockaddr_in temp;
+	temp.sin_addr.s_addr = htonl(recvbuf.data.userInfo.userIp);
+        std::cout << "userIp:\t\t"<<inet_ntoa(temp.sin_addr)<<std::endl;
+        std::cout << "userPort:\t"<<recvbuf.data.userInfo.userPort<<std::endl;
+        std::cout << "isMaster:\t"<<recvbuf.data.userInfo.isMaster<<std::endl;
+        std::cout << "roomId:\t\t"<<recvbuf.data.userInfo.RoomId << std::endl;
+        std::cout << "channelId:\t"<<recvbuf.data.userInfo.channelId << std::endl;
+        std::cout << "isLan:\t\t"<<recvbuf.data.userInfo.isLan<<std::endl;
+        std::cout << "********recvbuf end*******"<<std::endl;
+
+}
+
+void printSock(sockaddr_in &sockin){
+	std::cout << "******sockaddr_in*********" << std::endl;
+	std::cout << "sockinIp:\t" << inet_ntoa(sockin.sin_addr) << std::endl;
+	std::cout << "sockinPort:\t" << ntohs(sockin.sin_port) << std::endl;
+	std::cout << "***sockaddr_in end *******" << std::endl;
+}
+
+void printUserList(int roomId, std::vector<User> &userlist){
+	printf("\nroomid\tuserName\tmaster\tuserip\t\tuserport\n");
+	for(auto &d:userlist){
+		sockaddr_in temp;
+		temp.sin_addr.s_addr = htonl(d.userIp);
+		printf("%d\t%s\t%d\t%s\t%d\n",roomId,d.userName,d.isMaster,inet_ntoa(temp.sin_addr),d.userPort);
+	}
+	printf("\n");
+}
+
+void copyDataMessage(DataMessage &outbuf, DataMessage &recvbuf){
+	memcpy(outbuf.data.userInfo.userName, recvbuf.data.userInfo.userName, 20);
+       	outbuf.data.userInfo.userIp = recvbuf.data.userInfo.userIp;
+        outbuf.data.userInfo.userPort = recvbuf.data.userInfo.userPort;
+	outbuf.data.userInfo.isMaster = recvbuf.data.userInfo.isMaster;
+	outbuf.data.userInfo.RoomId = recvbuf.data.userInfo.RoomId;
+        outbuf.data.userInfo.channelId = recvbuf.data.userInfo.channelId;
+        outbuf.data.userInfo.isLan = recvbuf.data.userInfo.isLan;
+}
 
 recvmessage::recvmessage(streamsock *sSock):sSock(sSock){
 
@@ -39,6 +80,7 @@ void recvmessage::recvData()
 
     int indexNumber = 0;
     int roomId;
+    bool isMaster;
 
     std::map<int, std::vector<User>>::iterator it;
 
@@ -46,10 +88,12 @@ void recvmessage::recvData()
     struct sockaddr_in remoteDataTest;
     struct sockaddr_in remoteDatax;
 
-    bool isMaster;
+    std::map<int,std::vector<User>> rooms;
+
 
     for (;;)
     {
+        std::vector<User> userList;
 
         int ret = recvfrom(sSock->_sSock, (char *)&recvbuf, sizeof(recvbuf), 0, (sockaddr *)&sender, &dwSender);
 
@@ -58,187 +102,185 @@ void recvmessage::recvData()
             continue;
         }
 
+	if(recvbuf.messageType!=P2PYNC){
+	    printSock(sender);
+	    printMessage(recvbuf);
+	}
+
+
+
+    	roomId = recvbuf.data.userInfo.RoomId;
+    	it = rooms.find(roomId);
+    	isMaster = recvbuf.data.userInfo.isMaster;
+	
+
         int messageType = recvbuf.messageType;
         switch (messageType)
         {
             case MSGLOGIN:
-
-                roomId = recvbuf.data.userInfo.RoomId;
-                it = rooms.find(roomId);
                 User newUser;
                 if (it != rooms.end()) {//存在房间的情况下
-
-                    for (auto &c : it->second) {	//遍历用户信息
-                        //同一个屋子的用户名只能有一个
-                        if (strcmp(c.userName, recvbuf.data.userInfo.userName)==0) {//禁止用户二次登录
+			for(auto &c:it->second){
+			    if(strcmp(c.userName,recvbuf.data.userInfo.userName)==0){
                             DataMessage returnData;
                             returnData.messageType = MSGLOGINFIAL;
                             sendto(sSock->_sSock, (char*)(&returnData), sizeof(returnData), 0, (const sockaddr*)&sender, sizeof(sender));
-			    std::cout<<"has same User"<<std::endl;
-                            break;
+			    std::cout<<"user "<< newUser.userName << " socket " << inet_ntoa(sender.sin_addr) << ":" << ntohs(sender.sin_port) << " repeat login room "<< roomId <<std::endl;
+                            goto end;
                         }
                     }
 
-                    //User newUser;
                     memcpy(newUser.userName,recvbuf.data.userInfo.userName, 20);
-                    //Linux config
                     newUser.userIp = ntohl(sender.sin_addr.s_addr);
-
                     newUser.userPort = ntohs(sender.sin_port);
                     newUser.isMaster = it->second.size()>0?false:true;
+		    newUser.RoomId = recvbuf.data.userInfo.RoomId;
+                    newUser.channelId = recvbuf.data.userInfo.channelId;
 		    std::cout<<"add User and update Master"<<std::endl;
 
                     it->second.push_back(newUser);
-
-		    for(auto &d:it->second){
-			std::cout<<"Has User:"<<d.userName<< "    UserInfo is:"<<d.isMaster<<std::endl;
-		    }
-
-                    DataMessage updateUser;
+			
+                    
+		    DataMessage updateUser;
                     updateUser.messageType = UPDATAUSER;
                     updateUser.data.userInfo = newUser;
+			
+			printMessage(updateUser);
 
+		    //send new user to master
                     for (auto &d : it->second) {
                         if (d.isMaster == true) {
-
                             //bzero(&remote, sizeof(remote));
                             remote.sin_family = AF_INET;
                             remote.sin_port = htons(d.userPort);
                             remote.sin_addr.s_addr = htonl(d.userIp);
-                            std::cout << "find Master：" << inet_ntoa(remote.sin_addr) <<"|"<< htons(remote.sin_port) << std::endl;
                             sendto(sSock->_sSock, (char*)(&updateUser), sizeof(updateUser), 0, (const sockaddr*)&remote, sizeof(remote));
+                            std::cout << "send newuser " << newUser.userName << " socket " << inet_ntoa(sender.sin_addr) << ":" << ntohs(sender.sin_port) << " to master " \
+                                      <<inet_ntoa(remote.sin_addr)<<":"<<htons(remote.sin_port)<<std::endl;
+                            break;
                         }
                     }
-
-
                 }
                 else {	//不存在房间的情况下
+		    if(recvbuf.data.userInfo.isMaster == true){
+                    	memcpy(newUser.userName, recvbuf.data.userInfo.userName, 20);
 
+                    	newUser.userIp = ntohl(sender.sin_addr.s_addr);
+                    	newUser.userPort = ntohs(sender.sin_port);
+                    	newUser.isMaster = true;
 
+                    	std::cout << "USER "<< newUser.userName<<" socket "<< inet_ntoa(sender.sin_addr) <<":"<< ntohs(sender.sin_port) << " create room " << roomId << std::endl;
 
-                    memcpy(newUser.userName, recvbuf.data.userInfo.userName, 20);
-
-                    newUser.userIp = ntohl(sender.sin_addr.s_addr);
-                    newUser.userPort = ntohs(sender.sin_port);
-                    newUser.isMaster = true;
-
-                    std::cout << "USER:"<< newUser.userName<<" Create room :"<< inet_ntoa(sender.sin_addr)  <<"||"<< ntohs(sender.sin_port) << std::endl;
-
-                    userList.push_back(newUser);
-                    rooms[roomId]=userList;
+                    	userList.push_back(newUser);
+                    	rooms[roomId]=userList;
+		    	it = rooms.find(roomId);
+		    }
+		    else{
+			std::cout << "guest are not allowed to create rooms" << std::endl;
+			DataMessage returnData;
+			returnData.messageType=MSGLOGINFIAL;
+			sendto(sSock->_sSock,(char*)(&returnData),sizeof(returnData),0,(const sockaddr*)&sender,sizeof(sender));
+			goto end;
+		    }
 
                 }
+                
 
-
+		//return log success to self
                 DataMessage returnData;
                 returnData.messageType = MSGLOGINSUCESS;
-                returnData.data.userInfo = newUser;
+		copyDataMessage(returnData,recvbuf);
+		returnData.data.userInfo = newUser;
                 sendto(sSock->_sSock,(char*)(&returnData),sizeof(returnData),0, (const sockaddr*)&sender, sizeof(sender));
-
+                std::cout << "USER "<< newUser.userName<<" socket " << inet_ntoa(sender.sin_addr) << ":" << ntohs(sender.sin_port) << " login room " << roomId << std::endl;
+		
+		printUserList(roomId, it->second);
+		
+end:
                 break;
             case MSGLOGOUT:
-		//查询对应房间的用户，同时推送到主播的帐号。
-//查询对应房间的用户，同时推送到主播的帐号。
-			roomId = recvbuf.data.userInfo.RoomId;
-			it = rooms.find(roomId);
-			isMaster = recvbuf.data.userInfo.isMaster;
+		DataMessage logoutData;
+		logoutData.messageType = USERLOGOUT;
+		copyDataMessage(logoutData,recvbuf);
 
-			std::cout << "User LogOut:" << recvbuf.data.userInfo.userName << " and User isMaster:" << isMaster << std::endl;
+		if (it != rooms.end()) {//存在房间的情况下
 
-			//下线通知数据：
-			DataMessage logoutData;
-			logoutData.messageType = USERLOGOUT;
-			logoutData.data.userInfo.RoomId = roomId;
-			//memcpy_s(logoutData.data.userInfo.userName, 20, recvbuf.data.userInfo.userName, 20);
-			memcpy(logoutData.data.userInfo.userName, recvbuf.data.userInfo.userName, 20);
-			logoutData.data.userInfo.isMaster = isMaster;
-
-			if (it != rooms.end()) {//存在房间的情况下
-
-				//先下线当前用户
-				for (int i = 0; i < it->second.size(); ++i) {
-					if (strcmp(it->second[i].userName, recvbuf.data.userInfo.userName) == 0) {
-						(it->second).erase(it->second.begin() + i);
-					}
+			if (isMaster) {
+                                //current master send to all clients include master
+				for (uint i = 0; i < it->second.size(); ++i) {
+					sockaddr_in remote;
+					remote.sin_family = AF_INET;
+					remote.sin_port = htons(it->second[i].userPort);
+					remote.sin_addr.s_addr = htonl(it->second[i].userIp);
+					sendto(sSock->_sSock, (char*)(&logoutData), sizeof(logoutData), 0, (const sockaddr*)&remote, sizeof(remote));
+                                        std::cout<<"sendto client "<<it->second[i].userName << std::endl;
+				}
+				//delete the room
+				{	
+					std::vector<User>().swap(it->second);//empty userlist
+					rooms.erase(it);
+					std::cout<< "kill the room: "<< roomId << std::endl;				
 				}
 
-				if (isMaster) {
-					for (int i = 0; i < it->second.size(); ++i) {
+			}
+			else {
+                                //current client to master
+				for (uint i = 0; i < it->second.size(); ++i) {
+					if (it->second[i].isMaster) {
 						sockaddr_in remote;
 						remote.sin_family = AF_INET;
 						remote.sin_port = htons(it->second[i].userPort);
 						remote.sin_addr.s_addr = htonl(it->second[i].userIp);
 						sendto(sSock->_sSock, (char*)(&logoutData), sizeof(logoutData), 0, (const sockaddr*)&remote, sizeof(remote));
+                                                std::cout<<"sendto master "<<it->second[i].userName << std::endl;
+                                                break;
+					}
+			    	}
+                                //current client to self
+                                {
+                                	sendto(sSock->_sSock,(char*)(&logoutData),sizeof(logoutData),0,(const sockaddr*)&sender,sizeof(sender));
+                                }
+
+				//delete logout user from userlist
+				for (uint i = 0; i < it->second.size(); ++i) {
+					if (strcmp(it->second[i].userName, recvbuf.data.userInfo.userName) == 0) {
+						(it->second).erase(it->second.begin() + i);
+                                        	std::cout<< "erase "<<it->second[i].userName << std::endl;
 					}
 				}
-				else {
-					for (int i = 0; i < it->second.size(); ++i) {
-						if (it->second[i].isMaster) {
-							sockaddr_in remote;
-							remote.sin_family = AF_INET;
-							remote.sin_port = htons(it->second[i].userPort);
-							remote.sin_addr.s_addr = htonl(it->second[i].userIp);
-							sendto(sSock->_sSock, (char*)(&logoutData), sizeof(logoutData), 0, (const sockaddr*)&remote, sizeof(remote));
-						}
-					}
-				}
+                        	std::cout<< "username " <<logoutData.data.userInfo.userName<<" has logout"<<std::endl;
+				
+				printUserList(roomId,it->second);
+                }
 
-				std::cout << "remove User----" << std::endl;
-
-				for (auto &d : it->second) {
-					std::cout << "Has User:" << d.userName << "    UserInfo is:" << d.isMaster << std::endl;
-
-				}
-				std::cout << "remove User----" << std::endl;
-
-			}			
-
-std::cout << "user has logout" << std::endl;	
-
+		
                 break;
             case P2PYNC://登录成功后，定时发送数据到服务器，相当于心跳信息
                 //std::cout << "heart ync" << std::endl;
                 break;
 
-            case P2PACK://第三方响应数据
+            case P2PACK:
                 std::cout << "p2pack" << std::endl;
                 break;
 
-            case P2PRANS://需要穿墙了。。
-
-
+            case P2PRANS:
                 roomId = recvbuf.data.userInfo.RoomId;
-
                 it = rooms.find(roomId);
 
-                //std::cout << "need chuan qiang: from" << inet_ntoa(sender.sin_addr) << "|" << ntohs(sender.sin_port) << std::endl;
+                std::cout << "need chuan qiang: from" << inet_ntoa(sender.sin_addr) << "|" << ntohs(sender.sin_port) << std::endl;
                 //找到指定房间的相关用户后，再给用户发送特定的消息
                 if (it != rooms.end()) {
-                    //打印服务器里所有用户IP信息
-                    if (indexNumber % 20 == 0) {
-                        for (auto &c : it->second) {
-
-
-
-                            remoteDataTest.sin_family = AF_INET;
-
-                            remoteDataTest.sin_port = htons(c.userPort);
-                            remoteDataTest.sin_addr.s_addr = htonl(c.userIp);
-                            std::cout << c.userName << " Ipinfo is:" << inet_ntoa(remoteDataTest.sin_addr) << ":" << ntohs(remoteDataTest.sin_port) << std::endl;
-                        }
-                    }
 
                     for (auto &c : it->second) {
                         //要给指定的用户发送穿墙信息
                         if (strcmp(c.userName, recvbuf.data.userInfo.userName) == 0) {
 
-                            //std::cout << "Want to call user:" << roomId<<"	"<< c.userName<<":"<< recvbuf.data.userInfo.userName << std::endl;
+                            std::cout << "Want to call user:" << recvbuf.data.userInfo.userName << std::endl;
 
                             DataMessage transMessage;
                             transMessage.messageType = P2PSOMEONEWANTTOCALLYOU;
-                            //sender.sin_addr.S_un.S_addr
-                            transMessage.data.userInfo.userIp = htonl(sender.sin_addr.s_addr);
-                            transMessage.data.userInfo.userPort = htons(sender.sin_port);
+                            transMessage.data.userInfo.userIp = ntohl(sender.sin_addr.s_addr);
+                            transMessage.data.userInfo.userPort = ntohs(sender.sin_port);
                             transMessage.data.userInfo.isLan = false;
                             if (htonl(sender.sin_addr.s_addr)== htonl(c.userIp)) {
                                 transMessage.data.userInfo.isLan = true;
@@ -246,19 +288,8 @@ std::cout << "user has logout" << std::endl;
 
 
                             remoteDatax.sin_family = AF_INET;
-
                             remoteDatax.sin_port = htons(c.userPort);
                             remoteDatax.sin_addr.s_addr = htonl(c.userIp);
-                            /*
-                            感觉这些有些问题，具体未知
-                            remoteData:发送给的对方
-                            transMessage：是发起方向的信息
-                            */
-                            if (indexNumber % 30 == 0) {
-                                std::cout << inet_ntoa(sender.sin_addr) << ":" << ntohs(sender.sin_port) << " want push Data to " << inet_ntoa(remoteDatax.sin_addr) << ":" << ntohs(remoteDatax.sin_port) << std::endl;
-                            }
-                            indexNumber++;
-
 
                             sendto(sSock->_sSock, (const char*)&transMessage, sizeof(transMessage), 0, (const sockaddr *)&remoteDatax, sizeof(remoteDatax));
 
@@ -266,7 +297,9 @@ std::cout << "user has logout" << std::endl;
 
                     }
 
-                }
+               }
+            }
+		break; 
 
             default:
                 break;
@@ -276,3 +309,6 @@ std::cout << "user has logout" << std::endl;
     //sSock->_sSock
 
 }
+//
+// Created by lansnow on 2021/3/8.
+//
